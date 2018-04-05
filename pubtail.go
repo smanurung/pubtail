@@ -15,16 +15,31 @@ import (
 )
 
 type message struct {
-	fields log.Fields
-	body   []byte
+	fields    log.Fields
+	body      []byte
+	formatted []byte
 }
+
+type formatter interface {
+	format([]byte) ([]byte, error)
+}
+
+var (
+	fmtmap = map[string]formatter{
+		"avro": new(avroFormatter),
+		"text": new(textFormatter),
+	}
+)
 
 func main() {
 	topics := flag.String("topics", "playSonny1", "topics to subscribe in comma separated form")
-	projectID := flag.String("project", "tokopedia-970", "projectID on GCP")
+	projectID := flag.String("project", "projectid", "projectID on GCP")
+	format := flag.String("format", "text", "global format for printing message body")
 	flag.Parse()
 
 	ctx := context.Background()
+
+	log.Infof("connecting to projectid %s, using format %s", *projectID, *format)
 
 	cli, err := pubsub.NewClient(ctx, *projectID)
 	if err != nil {
@@ -35,18 +50,18 @@ func main() {
 	msgChan := make(chan message)
 
 	for _, topic := range topicSlice {
-		go listenToTopic(ctx, cli, msgChan, topic)
+		go listenToTopic(ctx, cli, msgChan, topic, *format)
 	}
 
 	for msg := range msgChan {
-		log.WithFields(msg.fields).Infof("%s", msg.body)
+		log.WithFields(msg.fields).Infof("%s", msg.formatted)
 	}
 
 	log.Println("pubtail finished")
 	os.Exit(0)
 }
 
-func listenToTopic(ctx context.Context, cli *pubsub.Client, ch chan<- message, topicName string) error {
+func listenToTopic(ctx context.Context, cli *pubsub.Client, ch chan<- message, topicName, format string) error {
 	subname := fmt.Sprintf("pubtail___%s___", topicName)
 
 	topic := cli.Topic(topicName)
@@ -76,15 +91,22 @@ func listenToTopic(ctx context.Context, cli *pubsub.Client, ch chan<- message, t
 			f[k] = v
 		}
 
+		formatted, err := fmtmap[format].format(m.Data)
+		if err != nil {
+			log.Errorf("failed to use format %s for message %s", format, m.Data)
+			return
+		}
+
 		ch <- message{
-			fields: f,
-			body:   m.Data,
+			fields:    f,
+			body:      m.Data,
+			formatted: formatted,
 		}
 
 		m.Ack()
 	})
 	if err != nil {
-		log.Printf("error on receive(): %v", err)
+		log.Errorf("error on receive(): %v", err)
 	}
 	return err
 }
