@@ -5,8 +5,10 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/signal"
 	"reflect"
 	"strings"
+	"syscall"
 
 	"cloud.google.com/go/pubsub"
 	log "github.com/Sirupsen/logrus"
@@ -48,6 +50,25 @@ func main() {
 
 	topicSlice := strings.Split(*topics, ",")
 	msgChan := make(chan message)
+
+	c := make(chan os.Signal, 1)
+	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		s := <-c
+		log.Infof("receiving signal: %s - will exit gracefully", s)
+
+		for _, topicName := range topicSlice {
+			subName := fmt.Sprintf("pubtail___%s___", topicName)
+			sub := cli.Subscription(subName)
+
+			if err := sub.Delete(ctx); err != nil {
+				log.Errorln(err)
+				return
+			}
+			log.Infof("Subscription %s has been deleted.", subName)
+		}
+		log.Info("cleaned")
+	}()
 
 	for _, topic := range topicSlice {
 		go listenToTopic(ctx, cli, msgChan, topic, *format)
